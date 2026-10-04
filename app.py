@@ -3,13 +3,12 @@ from __future__ import annotations
 import os
 from datetime import datetime
 from zoneinfo import ZoneInfo
-from urllib.parse import urlparse
 
 import streamlit as st
 
-from energy_agent import EnergyNewsAgent, PRIORITY_ORDER
+from energy_agent import EnergyNewsAgent, MAX_AI_CANDIDATES, PRIORITY_ORDER
 from news_collector import collect_energy_candidates, deduplicate_articles
-from sources import CATEGORIES, SOURCES
+from sources import CATEGORIES, ENERGY_TERMS, SOURCES
 
 
 st.set_page_config(
@@ -22,6 +21,7 @@ st.title("🛢️ Pakistan Energy News Agent")
 st.caption(
     "AI-curated petroleum, OMC, refinery, gas and power-sector news from approved Pakistani newspapers."
 )
+
 
 with st.sidebar:
     st.header("Settings")
@@ -37,7 +37,7 @@ with st.sidebar:
         groq_key = st.text_input(
             "Groq API key",
             type="password",
-            help="For deployment, store this in Streamlit Cloud Secrets instead of typing it each time.",
+            help="Store this in Streamlit Cloud Secrets for deployment.",
         )
 
     period_label = st.radio(
@@ -63,14 +63,21 @@ with st.sidebar:
         default=["High", "Medium", "General"],
     )
 
-    max_stories = st.slider("Maximum stories", 5, 25, 12, 1)
+    max_stories = st.slider(
+        "Maximum stories",
+        min_value=3,
+        max_value=MAX_AI_CANDIDATES,
+        value=MAX_AI_CANDIDATES,
+        step=1,
+        help="Capped to stay within the Groq on-demand token-per-minute limit.",
+    )
 
     broad_scan = st.checkbox(
         "Broader scan",
         value=False,
         help=(
-            "Scans more headlines before AI classification. It can find less obvious stories "
-            "but takes longer and uses more requests."
+            "Finds more possible headlines before local ranking. Only the strongest "
+            f"{MAX_AI_CANDIDATES} candidates are sent to the AI."
         ),
     )
 
@@ -88,15 +95,36 @@ def format_date(value) -> str:
     if not value:
         return "Publication time not detected"
     if isinstance(value, datetime):
-        return value.astimezone(ZoneInfo("Asia/Karachi")).strftime("%d %b %Y, %I:%M %p PKT")
+        return value.astimezone(ZoneInfo("Asia/Karachi")).strftime(
+            "%d %b %Y, %I:%M %p PKT"
+        )
     return str(value)
 
 
-def domain_label(url: str) -> str:
-    try:
-        return urlparse(url).netloc.replace("www.", "")
-    except Exception:
-        return ""
+def candidate_score(article: dict) -> tuple:
+    """
+    Rank locally before calling the LLM.
+    Title matches are weighted more heavily than snippet/body matches.
+    """
+    title = (article.get("title") or "").lower()
+    supporting = " ".join(
+        [
+            article.get("description") or "",
+            article.get("listing_snippet") or "",
+        ]
+    ).lower()
+
+    title_hits = sum(1 for term in ENERGY_TERMS if term in title)
+    support_hits = sum(1 for term in ENERGY_TERMS if term in supporting)
+    published = article.get("published_at")
+    timestamp = published.timestamp() if isinstance(published, datetime) else 0
+
+    return (title_hits * 4 + support_hits, timestamp)
+
+
+def select_ai_candidates(candidates: list[dict], limit: int) -> list[dict]:
+    ranked = sorted(candidates, key=candidate_score, reverse=True)
+    return ranked[:limit]
 
 
 @st.cache_data(ttl=900, show_spinner=False)
@@ -133,16 +161,27 @@ if st.button("Generate Energy Brief", type="primary", use_container_width=True):
                 st.session_state.brief = []
                 st.session_state.collection_errors = errors
             else:
-                st.write(f"Found {len(candidates)} candidate stories. Running AI relevance screening…")
+                ai_candidates = select_ai_candidates(
+                    candidates,
+                    MAX_AI_CANDIDATES,
+                )
+
+                st.write(
+                    f"Found {len(candidates)} possible stories. "
+                    f"Sending the strongest {len(ai_candidates)} to the AI editor…"
+                )
+
                 agent = EnergyNewsAgent(groq_key)
-                classified = agent.classify(candidates, categories)
+
+                # ONE AI call: relevance + category + priority + summary.
+                analyzed = agent.analyze(ai_candidates, categories)
 
                 relevant = [
-                    a
-                    for a in classified
-                    if a.get("relevant")
-                    and a.get("category") in categories
-                    and a.get("priority") in priorities
+                    item
+                    for item in analyzed
+                    if item.get("relevant")
+                    and item.get("category") in categories
+                    and item.get("priority") in priorities
                 ]
 
                 relevant = deduplicate_articles(relevant)
@@ -152,13 +191,8 @@ if st.button("Generate Energy Brief", type="primary", use_container_width=True):
                         -(a["published_at"].timestamp() if a.get("published_at") else 0),
                     )
                 )
-                relevant = relevant[:max_stories]
 
-                if relevant:
-                    st.write(f"Summarizing the top {len(relevant)} relevant stories…")
-                    brief = agent.summarize(relevant)
-                else:
-                    brief = []
+                brief = relevant[:max_stories]
 
                 st.session_state.brief = brief
                 st.session_state.collection_errors = errors
@@ -167,8 +201,9 @@ if st.button("Generate Energy Brief", type="primary", use_container_width=True):
     except Exception as exc:
         st.exception(exc)
         st.info(
-            "If this is a temporary newspaper blocking/rate-limit issue, try again later. "
-            "If it is an AI/API error, verify the Groq key in Streamlit Secrets."
+            "This version is optimized for Groq's 8K token-per-minute on-demand limit. "
+            "If you still see a TPM error, wait for the current one-minute rate-limit "
+            "window to reset and run the brief once again."
         )
 
 
@@ -177,6 +212,7 @@ brief = st.session_state.brief
 if brief:
     high_count = sum(1 for x in brief if x.get("priority") == "High")
     medium_count = sum(1 for x in brief if x.get("priority") == "Medium")
+
     c1, c2, c3 = st.columns(3)
     c1.metric("Stories", len(brief))
     c2.metric("High priority", high_count)
@@ -194,6 +230,7 @@ if brief:
             f"{priority.upper()}  ·  {category}  ·  {item.get('source', '')}  ·  "
             f"{format_date(item.get('published_at'))}"
         )
+
         st.write(item.get("summary", ""))
 
         if item.get("why_it_matters"):
@@ -202,6 +239,7 @@ if brief:
         cols = st.columns([1, 4])
         with cols[0]:
             st.link_button("Read original", item["url"], use_container_width=True)
+
         with cols[1]:
             alternates = item.get("alternate_sources", [])
             if alternates:
@@ -223,10 +261,11 @@ with st.expander("Source diagnostics"):
     else:
         st.caption(
             "News websites can change layout or temporarily block automated requests. "
-            "These diagnostics help identify which source needs an extractor update."
+            "These diagnostics identify which source may need an extractor update."
         )
         for err in errors[:30]:
             st.code(err)
+
 
 st.caption(
     "AI summaries can contain errors. Use the original article links for verification before making decisions."
