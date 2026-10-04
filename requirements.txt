@@ -1,0 +1,6 @@
+streamlit>=1.50,<2
+crewai[openai]>=1.15.17,<2
+requests>=2.32,<3
+beautifulsoup4>=4.13,<5
+python-dateutil>=2.9,<3
+rapidfuzz>=3.14,<4
