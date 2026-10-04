@@ -43,7 +43,7 @@ class EnergyNewsAgent:
 
     def __init__(self, api_key: str):
         self.llm = LLM(
-            model="openai/gpt-oss-20b",
+            model="openai/openai/gpt-oss-20b",
             custom_openai=True,
             base_url="https://api.groq.com/openai/v1",
             api_key=api_key,
