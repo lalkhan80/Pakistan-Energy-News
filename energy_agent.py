@@ -9,7 +9,7 @@ from sources import CATEGORIES
 
 
 PRIORITY_ORDER = {"High": 0, "Medium": 1, "General": 2}
-MAX_AI_CANDIDATES = 8
+MAX_AI_CANDIDATES = 16
 
 
 class EnergyNewsAgent:
@@ -49,8 +49,8 @@ class EnergyNewsAgent:
                         article.get("description")
                         or article.get("listing_snippet")
                         or ""
-                    )[:320],
-                    "excerpt": (article.get("body") or "")[:520],
+                    )[:180],
+                    "excerpt": (article.get("body") or "")[:260],
                 }
             )
 
@@ -154,7 +154,7 @@ If an impact is an inference, use cautious wording such as "may" or "could".
                 "json_schema": schema,
             },
             temperature=0.1,
-            max_completion_tokens=1800,
+            max_completion_tokens=2400,
             extra_body={
                 "reasoning_effort": "low",
                 "reasoning_format": "hidden",

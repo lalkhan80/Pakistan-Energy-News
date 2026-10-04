@@ -66,8 +66,8 @@ with st.sidebar:
     max_stories = st.slider(
         "Maximum stories",
         min_value=3,
-        max_value=MAX_AI_CANDIDATES,
-        value=MAX_AI_CANDIDATES,
+        max_value=min(12, MAX_AI_CANDIDATES),
+        value=min(12, MAX_AI_CANDIDATES),
         step=1,
         help="Capped to stay within the Groq on-demand token-per-minute limit.",
     )
